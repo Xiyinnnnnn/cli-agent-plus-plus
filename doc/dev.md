@@ -1,6 +1,6 @@
 # 宿主开发
 
-STATE ✓ 2026-11-21｜SCOPE 单文件宿主 `cli-agent.py`：对话循环、压缩、授权闸门、图片编码；技能集见 `README` 与 `skills/`
+STATE ✓ 2026-11-22｜SCOPE 单文件宿主 `cli-agent.py`：对话循环、压缩、授权闸门、图片编码；技能集见 `README` 与 `skills/`
 
 ## 分层
 
@@ -29,7 +29,6 @@ STATE ✓ 2026-11-21｜SCOPE 单文件宿主 `cli-agent.py`：对话循环、压
 |---|---|
 | 仓库内 | `cli-agent.py`（根目录） |
 | 安装后 | `~/.local/bin/cli-agent/cli-agent.py` |
-| 数据根 | `~/.config/cli-agent/`：`key.bin` + `memory/` `skill/` `taskbook/` |
 | 依赖 | Python 3.10+、Pillow、prompt_toolkit、rich（可选，缺失退回原样打印）；系统包与 pip/npm 由 `install.sh` 装 |
 
 ## 常量
@@ -44,6 +43,9 @@ STATE ✓ 2026-11-21｜SCOPE 单文件宿主 `cli-agent.py`：对话循环、压
 | MAX_CMD | 6000 | 单条命令字符上限，超出不执行 |
 | REASONING_EFFORT | high | 请求体 `reasoning_effort` |
 | AUTH_TIMEOUT | 30 | 授权等待秒数；≤0 不设超时（非 tty 仍用 `input()`） |
+| MAXLONG | 512 | 送模图片长边像素上限，超出按比例缩放 |
+| QCOL | 216 | 图片调色板量化色数（上限 256），输出 PNG；≤1 关闭量化 |
+| TOOL_ALIASES | run/terminal/shell/bash/exec/cmd | 模型调用名不分大小写，全部分发到 `RUN`（派生表 `TOOL_IMPL`）；其余名回 `未知工具 <name>` |
 
 ## 提示词符号语义
 
@@ -145,14 +147,14 @@ while True:
 | compress | 历史 → 新快照（append-only） |
 | sanitize_hist | 丢弃 tool_calls 与 tool 回填不配对的消息段 |
 | confirm_block | 授权闸门 |
-| RUN | 执行命令，边读边响应中断，超时 3600s |
+| RUN | 执行命令，边读边响应中断 |
 | _kp | 无条件 `killpg(SIGKILL)` 回收整组 |
 | _img / _shrink / _shrink_raw / _dec / _enc | 图片编码，自研无外部依赖 |
-| load/save_api_key | `key.bin` 读写（machine-id XOR + base64，0600） |
+| load/save_api_key | `key.bin` 读写（machine-id XOR + base64） |
 
 ## 密钥
 
-`load_api_key()` 只读 `~/.config/cli-agent/key.bin`，源码不含明文；缺失时 `welcome()` 向导写入并 `chmod 600`。换 key 重写该文件即可。
+源码不含明文，`load_api_key()` 只读 `key.bin`；缺失时 `welcome()` 向导写入并 `chmod 600`。换 key 重写该文件即可。
 
 ## 改哪验哪
 
@@ -183,7 +185,7 @@ PY
 | 会话 | 新终端 = 新对话；`mem_hist` 纯内存，不落盘 |
 | 中断 | 流式收包与命令执行期间均 `select` 0s 轮询 stdin |
 | 命令超时 | 3600s，超时整组 kill |
-| 命令长度 | 6000 字符（`MAX_CMD`），大文件写入分块追加 |
+| 大文件写入 | 分块追加（单条命令受 `MAX_CMD` 限） |
 | 注释 | 源码零注释，解释只在本文件 |
 
 ## 坑
