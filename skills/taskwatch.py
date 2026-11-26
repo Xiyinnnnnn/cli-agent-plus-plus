@@ -234,7 +234,8 @@ def watch(tag, timeout, interval, file, min_size, stable, gdone, gblock):
 
 # ---------- 子命令 ----------
 def do_run(a):
-    cmd = " ".join(a.cmd).strip()
+    # 单个参数 = 整条 shell 命令（可含 && ; |）；多个参数 = argv，逐个转义，保留空格与引号
+    cmd = (a.cmd[0] if len(a.cmd) == 1 else shlex.join(a.cmd)).strip()
     if not cmd:
         die("no_cmd")
     tag = a.tag or ("t" + hashlib.sha1(cmd.encode()).hexdigest()[:8])
