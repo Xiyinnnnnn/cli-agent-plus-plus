@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """md2pdf.py — Termux/Android 本地 Markdown → PDF（纯 Python，依赖 fpdf2 + fonttools）
 
-用法: python3 md2pdf.py 输入.md [输出.pdf] [--size 8] [--landscape]
+用法: python3 md2pdf.py 输入.md [输出.pdf] [--size 8] [--portrait]
+      默认 A4 横排；--portrait 改竖排。退出码 0 成功 / 1 无参数或生成失败 / 2 选项错误
 
 要点:
   * 系统无 pandoc/LaTeX 时可用；中文字体用 /system/fonts/DroidSansChinese.ttf
@@ -329,13 +330,27 @@ def parse(md):
     return blocks
 
 
-def main():
-    args = [a for a in sys.argv[1:]]
+def parse_args(argv):
+    """返回 (位置参数, 字号, 是否横排)；选项错误 → exit 2（不让未知选项被当成输出路径）"""
+    args = list(argv)
     size, landscape = 8.0, True
     if '--size' in args:
-        k = args.index('--size'); size = float(args[k + 1]); del args[k:k + 2]
+        k = args.index('--size')
+        try:
+            size = float(args[k + 1])
+        except (IndexError, ValueError):
+            print('--size 需要数字，如 --size 8', file=sys.stderr); sys.exit(2)
+        del args[k:k + 2]
     if '--portrait' in args:
         landscape = False; args.remove('--portrait')
+    bad = [a for a in args if a.startswith('--')]
+    if bad:
+        print('未知选项: ' + ' '.join(bad) + '（横排是默认；竖排用 --portrait）', file=sys.stderr); sys.exit(2)
+    return args, size, landscape
+
+
+def main():
+    args, size, landscape = parse_args(sys.argv[1:])
     if not args:
         print(__doc__); sys.exit(1)
     src = os.path.abspath(args[0])

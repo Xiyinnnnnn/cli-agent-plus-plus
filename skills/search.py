@@ -15,13 +15,28 @@ from urllib import error, request
 BASE = os.environ.get("TAVILY_BASE", "https://api.tavily.com")
 CFG_DIR = Path.home() / ".config" / "cli-agent" / "skill"
 STATE_F = CFG_DIR / ".search_state.json"
-KEYS = os.environ.get("TAVILY_KEYS", "").split()
+KEYS_F = CFG_DIR / ".search_keys"   # 方式 C：每行一个 key，# 开头为注释
+# 方式 A：使用者把自己的 key 填进下面的列表（私有副本）。分发/提交前必须保持为空。
+KEYS_INLINE = []                   # 例: ["tvly-xxxx", "tvly-yyyy"]
 
 WINDOW = 60.0          # 限流窗口秒
 USAGE_TTL = 600.0      # 额度缓存；等于 /usage 限流周期，避免撞 10/10min
 USAGE_MIN_GAP = 62.0   # 单 key 两次 /usage 最小间隔
 LOW_QUOTA = 50         # 剩余低于此值降权
 MAX_BACKOFF = 300
+
+
+def load_keys():
+    """合并 A/B/C 三处 key，按出现顺序去重；全空返回 []"""
+    srcs = list(KEYS_INLINE) + os.environ.get("TAVILY_KEYS", "").split()
+    if KEYS_F.exists():
+        srcs += [l.strip() for l in KEYS_F.read_text().splitlines()
+                 if l.strip() and not l.lstrip().startswith("#")]
+    seen, out = set(), []
+    for k in srcs:
+        if k and k not in seen:
+            seen.add(k); out.append(k)
+    return out
 
 
 def kid(k):
@@ -255,10 +270,12 @@ def main():
     ap.add_argument("--stats", action="store_true", help="打印各 key 额度/冷却/窗口")
     a = ap.parse_args()
 
-    keys = list(KEYS)
-    if KEYS_F.exists():
-        keys = [l.strip() for l in KEYS_F.read_text().splitlines() if l.strip()]
+    keys = load_keys()
     if not keys:
+        print("错误: 未配置 Tavily key。任选其一:\n"
+              "  A 填入 search.py 顶部 KEYS_INLINE\n"
+              "  B 环境变量 TAVILY_KEYS（空格分隔多个）\n"
+              f"  C 写入 {KEYS_F}（每行一个）", file=sys.stderr)
         sys.exit(2)
     pool = Pool(keys, a.rpm, a.verbose)
     if a.reset:

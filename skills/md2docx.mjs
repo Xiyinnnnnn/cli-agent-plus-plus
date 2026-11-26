@@ -131,12 +131,21 @@ function build(md) {
   return blocks;
 }
 
-const args = process.argv.slice(2);
-const flags = new Set(args.filter((a) => a.startsWith("--")));
-const pos = args.filter((a) => !a.startsWith("--"));
-const src = pos[0], dst = pos[1] || src.replace(/\.md$/i, "") + ".docx";
-const titleIdx = args.indexOf("--title");
-const title = titleIdx > -1 ? args[titleIdx + 1] : null;
+const raw = process.argv.slice(2);
+// 先摘掉「选项+值」，剩下的才是位置参数；否则 --title 的值会被当成输出路径
+const takeOpt = (name) => {
+  const i = raw.indexOf(name);
+  if (i < 0) return null;
+  const v = raw[i + 1];
+  if (v === undefined || v.startsWith("--")) { console.error(`${name} 需要一个值`); process.exit(2); }
+  raw.splice(i, 2);
+  return v;
+};
+const title = takeOpt("--title");
+const unknown = raw.filter((a) => a.startsWith("--"));
+if (unknown.length) { console.error("未知选项: " + unknown.join(" ")); process.exit(2); }
+const pos = raw;
+const src = pos[0], dst = pos[1] || (src ? src.replace(/\.md$/i, "") + ".docx" : "");
 
 if (!src || !fs.existsSync(src)) {
   console.error("usage: node md2docx.mjs in.md [out.docx] [--title \"标题\"]");

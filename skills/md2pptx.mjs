@@ -5,11 +5,21 @@ import fs from "node:fs";
 import path from "node:path";
 import PptxGenJS from "pptxgenjs";
 
-const args = process.argv.slice(2);
-const pos = args.filter((a) => !a.startsWith("--"));
-const ti = args.indexOf("--theme");
-const accent = (ti > -1 ? args[ti + 1] : "1F3864").replace(/^#/, "");
-const src = pos[0], dst = pos[1] || src.replace(/\.md$/i, "") + ".pptx";
+const raw = process.argv.slice(2);
+// 先摘掉「选项+值」，剩下的才是位置参数；否则 --theme 的值会被当成输出路径
+const ti = raw.indexOf("--theme");
+let accent = "1F3864";
+if (ti > -1) {
+  const v = raw[ti + 1];
+  if (v === undefined || v.startsWith("--")) { console.error("--theme 需要一个值"); process.exit(2); }
+  accent = v.replace(/^#/, "");
+  raw.splice(ti, 2);
+}
+if (!/^[0-9A-Fa-f]{6}$/.test(accent)) { console.error("--theme 须为 6 位十六进制色，如 1F3864"); process.exit(2); }
+const unknown = raw.filter((a) => a.startsWith("--"));
+if (unknown.length) { console.error("未知选项: " + unknown.join(" ")); process.exit(2); }
+const pos = raw;
+const src = pos[0], dst = pos[1] || (src ? src.replace(/\.md$/i, "") + ".pptx" : "");
 
 if (!src || !fs.existsSync(src)) {
   console.error('usage: node md2pptx.mjs in.md [out.pptx] [--theme "1F3864"]');
@@ -45,7 +55,6 @@ for (const raw of fs.readFileSync(src, "utf8").replace(/\r\n?/g, "\n").split("\n
   if (cur.tables.length) cur.tables[cur.tables.length - 1].open = false;
   if (/^\s*([-*+]|\d+\.)\s+/.test(ln)) cur.bullets.push(strip(ln.replace(/^\s*([-*+]|\d+\.)\s+/, "")));
   else if (ln.trim() && !/^\s*```/.test(ln) && !/^STATE|^REF/.test(ln.trim())) cur.bullets.push(strip(ln.trim()));
-  if (cur.bullets.length > 40) cur.bullets = cur.bullets.slice(0, 40);
 }
 
 const pres = new PptxGenJS();
@@ -61,31 +70,42 @@ if (cover) {
   if (sub) s.addText(sub, { x: 0.85, y: 3.7, w: 11.5, h: 1.6, fontSize: 14, color: "D9E2F3", lineSpacingMultiple: 1.3 });
 }
 
+const BUL_MAX = 7, TBL_MAX = 9;   // 每页 bullet 条数 / 表格行数（含表头）；超出自动续页，不截断
+const tblChunks = (rows) => {
+  const [head, ...body] = rows;
+  if (!body.length) return [[head]];
+  const out = [];
+  for (let i = 0; i < body.length; i += TBL_MAX - 1) out.push([head, ...body.slice(i, i + TBL_MAX - 1)]);
+  return out;
+};
+let cont = 0, total = 0;
 for (const sl of slides) {
   const pages = [];
-  const chunks = [];
-  for (let i = 0; i < sl.bullets.length; i += 7) chunks.push(sl.bullets.slice(i, i + 7));
-  if (!chunks.length) chunks.push([]);
-  chunks.forEach((group, k) => pages.push({ bullets: group, tables: k === 0 ? sl.tables : [], first: k === 0 }));
-  for (const pg of pages) {
+  const bchunks = [];
+  for (let i = 0; i < sl.bullets.length; i += BUL_MAX) bchunks.push(sl.bullets.slice(i, i + BUL_MAX));
+  if (!bchunks.length) bchunks.push([]);
+  const tch = sl.tables.map((tb) => tblChunks(tb.rows));
+  bchunks.forEach((g, k) => pages.push({ bullets: g, tables: k === 0 ? tch.map((c) => c[0]) : [] }));
+  tch.forEach((c) => c.slice(1).forEach((rows) => pages.push({ bullets: [], tables: [rows] })));
+  pages.forEach((pg, k) => {
+    total++; if (k > 0) cont++;
     const s = pres.addSlide();
     s.addShape("rect", { x: 0, y: 0, w: 13.33, h: 0.9, fill: { color: accent } });
-    s.addText(sl.title || " ", { x: 0.5, y: 0.12, w: 12.3, h: 0.66, fontSize: 22, bold: true, color: "FFFFFF" });
+    s.addText((sl.title || " ") + (k > 0 ? "（续）" : ""), { x: 0.5, y: 0.12, w: 12.3, h: 0.66, fontSize: 22, bold: true, color: "FFFFFF" });
     let y = 1.15;
     if (pg.bullets.length) {
       s.addText(pg.bullets.map((b) => ({ text: b, options: { bullet: true, breakLine: true } })),
         { x: 0.55, y, w: 12.2, h: Math.min(3.2, 0.42 * pg.bullets.length + 0.3), fontSize: 14, color: "222222", valign: "top" });
       y += Math.min(3.6, 0.42 * pg.bullets.length + 0.5);
     }
-    for (const t of pg.tables) {
-      const rows = t.rows.slice(0, 9).map((r) => r.map((c) => ({ text: c, options: {} })));
-      if (!rows.length) continue;
+    for (const rows0 of pg.tables) {
+      const rows = rows0.map((r) => r.map((c) => ({ text: c, options: {} })));
       s.addTable(rows, { x: 0.55, y, w: 12.2, fontSize: 10, border: { pt: 0.5, color: "BFBFBF" },
         fill: { color: "FFFFFF" }, color: "222222", autoPage: false });
       y += 0.36 * rows.length + 0.25;
     }
-  }
+  });
 }
 
 await pres.writeFile({ fileName: dst });
-console.log(JSON.stringify({ ev: "ok", src, out: dst, slides: slides.length + (cover ? 1 : 0) }));
+console.log(JSON.stringify({ ev: "ok", src, out: dst, slides: slides.length + (cover ? 1 : 0), pages: total + (cover ? 1 : 0), continued: cont }));
