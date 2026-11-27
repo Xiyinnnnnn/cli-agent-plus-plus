@@ -42,5 +42,6 @@ flatpak override --user --talk-name=org.a11y.Bus <appid>   # 沙箱应用上不�
 - `get_extents(SCREEN)` 与 `get_extents(WINDOW)` 返回同一个窗口局部值，只有 `PARENT` 是父相对；`local` 标志只认 `(0,0)`，窗口不在原点时漏判，`click` 会静默点偏。
 - 截图分辨率可高于屏幕逻辑分辨率（缩放），AT-SPI 坐标与截图像素不可换算混用。
 - 枚举依赖应用自己实现 a11y：flatpak Qt6（KCalc）有完整树；konsole 不带 `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1` 完全不上总线；Electron 需开关；自绘界面（游戏）没树。
+- `act` 连发要留间隔：0.6 s 内连按 3 次只进 1 个事件，循环里加 `sleep 0.5` 再读回校验。
 - `--depth` 决定召回：kcalc 按钮在第 8 层，`--depth 3` 只剩 11 个节点。
 - 被枚举的应用先杀掉再收工：残留窗口会污染后续 `tree`。
