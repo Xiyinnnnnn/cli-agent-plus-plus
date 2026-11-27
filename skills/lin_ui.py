@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """lin_ui.py — Linux 界面树（AT-SPI）：枚举 → 动作；坐标点击只在 X11 可靠
-STATE 未实机验证 2026-11-17（本机 Termux，无 flatpak/Wayland 宿主）
+STATE 已实机验证 2026-11-27（Bazzite / KDE Plasma Wayland / flatpak Qt6 应用）
 用法见同目录 00-图形界面操作.md
 退出码 0 ok ｜ 2 无 a11y 总线 ｜ 4 无命中 ｜ 5 参数或能力不支持 ｜ 6 目标未找到
 """
@@ -29,7 +29,19 @@ def desk():
     k, mod = BACKEND
     return mod.get_desktop(0) if k == "gi" else mod.Registry.getDesktop(0)
 def kids(a):
-    return [a.get_child_at_index(i) for i in range(a.get_child_count())]
+    out = []
+    try:
+        n = a.get_child_count()
+    except Exception:
+        return out
+    for i in range(n):
+        try:
+            c = a.get_child_at_index(i)
+        except Exception:
+            c = None
+        if c is not None:
+            out.append(c)
+    return out
 def nm(a):
     return a.get_name() or ""
 def role(a):
@@ -68,12 +80,12 @@ def do(a, i):
     k, mod = BACKEND
     ac = a.get_action_iface() if k == "gi" else a.queryAction()
     return ac.do_action(i)
-def walk(a, path, idx, depth, maxd):
-    if depth > maxd or len(idx) >= maxd * 20:
+def walk(a, path, idx, depth, maxd, limit=20000):
+    if a is None or depth > maxd or len(idx) >= limit:
         return
     idx[path] = a
     for n, c in enumerate(kids(a)):
-        walk(c, "%s.%d" % (path, n), idx, depth + 1, maxd)
+        walk(c, "%s.%d" % (path, n), idx, depth + 1, maxd, limit)
 def hid(path, a):
     import hashlib
     return hashlib.sha1(("%s|%s|%s" % (path, role(a), nm(a))).encode()).hexdigest()[:8]
@@ -81,13 +93,33 @@ def _sh(cmd):
     if not shutil.which(cmd[0]):
         return None
     return subprocess.run(cmd, capture_output=True, text=True)
+def _ydotool_state():
+    import socket
+    if not shutil.which("ydotool"):
+        return "未装 → click 不可用"
+    sock = os.environ.get("YDOTOOL_SOCKET") or "/run/user/%d/.ydotool_socket" % os.getuid()
+    if not os.path.exists(sock):
+        return "装了但 ydotoold 未起 → click 在 Wayland 不可用(X11 才走 xdotool)"
+    # ydotoold 的实际类型随版本不同（dgram/seqpacket/stream），逐个试连
+    for typ in (socket.SOCK_DGRAM, getattr(socket, "SOCK_SEQPACKET", socket.SOCK_DGRAM), socket.SOCK_STREAM):
+        s = socket.socket(socket.AF_UNIX, typ)
+        try:
+            s.connect(sock)
+            return "daemon ok"
+        except OSError:
+            pass
+        finally:
+            s.close()
+    return "socket 残留但守护未起 → 起 ydotoold"
 def cmd_prep(a):
     g = _sh(["gsettings", "get", "org.gnome.desktop.interface", "toolkit-accessibility"])
     print("# toolkit-accessibility = %s" % ((g.stdout.strip() if g else "") or "? (无 gsettings：非 GNOME 或未装)"))
     b = _sh(["busctl", "--user", "list"])
     ok = ("org.a11y.Bus" in (b.stdout or "")) if b else None
     print("# a11y bus = %s" % ("yes" if ok else ("no → at-spi-bus-launcher 未起，树会空" if ok is False else "? (无 busctl)")))
-    print("# flatpak 应用需：flatpak override --user --talk-name=org.a11y.Bus <appid>")
+    print("# 会话 = %s/%s" % (os.environ.get("XDG_SESSION_TYPE", "?"), os.environ.get("XDG_CURRENT_DESKTOP", "?")))
+    print("# ydotool = %s" % _ydotool_state())
+    print("# flatpak 应用需：flatpak override --user --talk-name=org.a11y.Bus <appid>（非沙箱或已放行则不必）")
     _init()
     print("# backend = %s apps = %d" % (BACKEND[0], desk().get_child_count()))
 def cmd_tree(a):
@@ -97,7 +129,7 @@ def cmd_tree(a):
         if a.app and a.app.lower() not in nm(app).lower():
             continue
         idx = {}
-        walk(app, "app:%s" % nm(app), idx, 0, a.depth)
+        walk(app, "app:%s" % nm(app), idx, 0, a.depth, limit=max(2000, a.max * 4 if getattr(a, "max", None) else 20000))
         for path, acc in idx.items():
             if not showing(acc):
                 continue
@@ -114,19 +146,23 @@ def cmd_tree(a):
     print("# n=%d backend=%s coords_local=%d" % (len(rows), BACKEND[0], sum(1 for r in rows if r[5] == "local")))
     for i, r, n, e, ac, fl in rows:
         print("\t".join([i, r, n, ("%d,%d,%d,%d" % e) if e else "-", ",".join(ac[:3]) or "-", fl]))
-    if rows and sum(1 for r in rows if r[5] == "local") == len(rows):
+    if not rows:
+        die("[tree] 无命中 (exit 4)：换 --app 关键字，或加大 --depth", 4)
+    if sum(1 for r in rows if r[5] == "local") == len(rows):
         print("# 提示：全部 local → Wayland 下拿不到全局坐标，用 act 走 Action 而不是 click", file=sys.stderr)
 def cmd_act(a):
     _init()
     idx = {}
     for app in kids(desk()):
-        walk(app, "app:%s" % nm(app), idx, 0, a.depth)
+        walk(app, "app:%s" % nm(app), idx, 0, a.depth, limit=max(2000, a.max * 4 if getattr(a, "max", None) else 20000))
     for path, acc in idx.items():
         if hid(path, acc) == a.id:
             names = acts(acc)
             if not names:
                 die("[act] 该节点无 Action (exit 6)：%s %s" % (role(acc), nm(acc)), 6)
-            i = names.index(a.name) if (a.name and a.name in names) else 0
+            if a.name and a.name not in names:
+                die("[act] 无此 action '%s' (exit 5)：可用 = %s" % (a.name, ",".join(names)), 5)
+            i = names.index(a.name) if a.name else 0
             do(acc, i)
             print("# act ok id=%s action=%s" % (a.id, names[i]))
             return
@@ -135,7 +171,7 @@ def _find(a):
     _init()
     idx = {}
     for app in kids(desk()):
-        walk(app, "app:%s" % nm(app), idx, 0, a.depth)
+        walk(app, "app:%s" % nm(app), idx, 0, a.depth, limit=max(2000, a.max * 4 if getattr(a, "max", None) else 20000))
     for path, acc in idx.items():
         if hid(path, acc) == a.id:
             return acc
@@ -148,15 +184,27 @@ def cmd_click(a):
     if e[0] == 0 and e[1] == 0 and not a.force:
         die("[click] 坐标疑为窗口局部(0,0)，Wayland 下不可信 (exit 5)：改用 act", 5)
     x, y = e[0] + e[2] // 2, e[1] + e[3] // 2
+    if os.environ.get("WAYLAND_DISPLAY"):
+        print("# 警告：Wayland 下 extents 多为窗口局部坐标，%d,%d 未必是真屏幕位置；能用 act 就别 click" % (x, y), file=sys.stderr)
+    err = []
     if shutil.which("ydotool"):
-        subprocess.run(["ydotool", "mousemove", "-a", "-x", str(x), "-y", str(y)], check=False)
-        subprocess.run(["ydotool", "click", "0xC0"], check=False)
-        print("# click ydotool %d,%d" % (x, y))
-    elif shutil.which("xdotool"):
-        subprocess.run(["xdotool", "mousemove", str(x), str(y), "click", "1"], check=False)
-        print("# click xdotool %d,%d" % (x, y))
-    else:
-        die("[click] 需 ydotool(通吃) 或 xdotool(仅 X11) (exit 5)", 5)
+        m = subprocess.run(["ydotool", "mousemove", "-a", "-x", str(x), "-y", str(y)],
+                           capture_output=True, text=True)
+        if m.returncode == 0:
+            subprocess.run(["ydotool", "click", "0xC0"], capture_output=True, text=True)
+            print("# click ydotool %d,%d" % (x, y))
+            return
+        err.append("ydotool: " + ((m.stderr or m.stdout).strip().splitlines() or ["fail"])[-1])
+    if shutil.which("xdotool") and os.environ.get("WAYLAND_DISPLAY") and not a.force:
+        die("[click] Wayland 下 xdotool 是空操作 (exit 5)：先起 ydotoold，或改用 act；确要硬试加 --force", 5)
+    if shutil.which("xdotool"):
+        r = subprocess.run(["xdotool", "mousemove", str(x), str(y), "click", "1"],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            print("# click xdotool %d,%d" % (x, y))
+            return
+        err.append("xdotool: " + ((r.stderr or r.stdout).strip().splitlines() or ["fail"])[-1])
+    die("[click] 无可用注入器 (exit 5)：%s｜Wayland 装 ydotool 并起 ydotoold；X11 可用 xdotool" % ("; ".join(err) or "两者都未安装"), 5)
 def cmd_shot(a):
     if os.environ.get("WAYLAND_DISPLAY"):
         cands = [["grim", a.out], ["spectacle", "-b", "-n", "-o", a.out], ["gnome-screenshot", "-f", a.out]]
